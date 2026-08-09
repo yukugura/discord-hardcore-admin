@@ -13,6 +13,17 @@ from dotenv import load_dotenv
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]{3,32}$")
+DEFAULT_VERSION_ROWS = (
+    ("paper", "1.21.8", 60, "https://fill-data.papermc.io/v1/objects/8de7c52c3b02403503d16fac58003f1efef7dd7a0256786843927fa92ee57f1e/paper-1.21.8-60.jar", True),
+    ("paper", "1.21.10", 112, "https://fill-data.papermc.io/v1/objects/d901c205cebd2c14e2d92c5fcbd0ba95add71da9726fc7829d1431a8b80969b6/paper-1.21.10-112.jar", True),
+    ("paper", "1.21.10", 113, "https://fill-data.papermc.io/v1/objects/d4f897545310f31e623d9680786b25dd20a9989e139db050d1aacf81ecafd05c/paper-1.21.10-113.jar", True),
+    ("paper", "1.21.11", 38, "https://fill-data.papermc.io/v1/objects/7c16d3931f725a575aa6caa3e537d0ccc962e1413644f9bb31f885fc3d6a9a98/paper-1.21.11-38.jar", True),
+    ("paper", "1.21.11", 92, "https://fill-data.papermc.io/v1/objects/f3f6bb1f913bd977da65edaec79ec94ced7c7971352d8630eddf782d6af0f03c/paper-1.21.11-92.jar", True),
+    ("paper", "26.1.2", 63, "https://fill-data.papermc.io/v1/objects/b51d49a5f62446b7cfc01e6c29e48e0ce6abd35a783134aace1047b839b178ef/paper-26.1.2-63.jar", True),
+    ("paper", "26.1.2", 71, "https://fill-data.papermc.io/v1/objects/542288423062864e56969a44c6927b860152cb827c65ff5f841178602bc99e9a/paper-26.1.2-71.jar", True),
+    ("paper", "26.2.0", 111, "https://fill-data.papermc.io/v1/objects/3ec81e3ea50cc6090b94aab024491846a202702e8a874308a5d7510f6b3aa012/paper-26.2-111.jar", True),
+    *(("vanilla", version, 1, "1", True) for version in ("1.20.1", "1.20.2", "1.20.3", "1.20.4", "1.20.5", "1.20.6", "1.21.2", "1.21.3", "1.21.4", "1.21.5", "1.21.6", "1.21.7", "1.21.8")),
+)
 class CapacityError(RuntimeError): pass
 
 def env(name):
@@ -84,6 +95,10 @@ class Store:
                 is_supported BOOLEAN NOT NULL DEFAULT TRUE,
                 UNIQUE KEY sv_type (sv_type,sv_ver,build_ver)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""")
+            cur.execute("SELECT COUNT(*) FROM server_versions")
+            if cur.fetchone()[0] == 0:
+                cur.executemany("INSERT INTO server_versions(sv_type,sv_ver,build_ver,download_url,is_supported) VALUES(%s,%s,%s,%s,%s)", DEFAULT_VERSION_ROWS)
+                log.info("DB bootstrap: added %s default server versions", len(DEFAULT_VERSION_ROWS))
             cur.execute("SHOW COLUMNS FROM servers LIKE 'last_reset_at'")
             if cur.fetchone() is None:
                 cur.execute("ALTER TABLE servers ADD COLUMN last_reset_at DATETIME NULL")
