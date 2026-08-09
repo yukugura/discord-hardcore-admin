@@ -1,5 +1,5 @@
 """DB を正として Discord から Minecraft ハードコア鯖を提供するボット。"""
-import asyncio, logging, os, re, shlex
+import asyncio, logging, os, re, secrets, shlex, string
 from dataclasses import dataclass
 
 import discord
@@ -48,6 +48,11 @@ class Store:
                 cur.execute("ALTER TABLE servers ADD COLUMN last_reset_at DATETIME NULL")
                 cur.execute("UPDATE servers SET last_reset_at=UTC_TIMESTAMP() WHERE last_reset_at IS NULL")
                 log.info("DB migration: added servers.last_reset_at")
+            cur.execute("SHOW COLUMNS FROM servers LIKE 'reset_code'")
+            if cur.fetchone() is None:
+                cur.execute("ALTER TABLE servers ADD COLUMN reset_code CHAR(8) NULL")
+                cur.execute("ALTER TABLE servers ADD UNIQUE KEY unique_reset_code (reset_code)")
+                log.info("DB migration: added servers.reset_code")
             # 旧スキーマには (dc_user_id, sv_name) を UNIQUE にしているものがある。
             # deleted 行は履歴として保持するため、その制約では削除後に同名再作成できず、
             # admin の複数作成にも不適切。外部キー用の通常インデックスを先に用意してから外す。
@@ -103,15 +108,27 @@ class Store:
             if port is None:
                 await self.event("create_rejected_capacity", user_id, detail="all 10 hardcore slots are occupied")
                 raise CapacityError("現在、ハードコアサーバーの作成枠（10 台）がすべて使用中です。空きが出るまで作成できません。")
-            await self.query("INSERT INTO servers(dc_user_id,sv_name,sv_type,sv_ver,sv_port,status,last_reset_at) VALUES(%s,%s,%s,%s,%s,'creating',UTC_TIMESTAMP())", (str(user_id),name,server_type,version,port))
+            # コードはパスワードではなく、共有リセット用の識別子として平文保存する。
+            alphabet = string.ascii_uppercase + string.digits
+            for _ in range(10):
+                reset_code = ''.join(secrets.choice(alphabet) for _ in range(8))
+                try:
+                    await self.query("INSERT INTO servers(dc_user_id,sv_name,sv_type,sv_ver,sv_port,status,last_reset_at,reset_code) VALUES(%s,%s,%s,%s,%s,'creating',UTC_TIMESTAMP(),%s)", (str(user_id),name,server_type,version,port,reset_code))
+                    break
+                except mysql.connector.IntegrityError:
+                    continue
+            else: raise RuntimeError("リセットコードを発行できませんでした")
             row = (await self.query("SELECT sv_id FROM servers WHERE dc_user_id=%s AND sv_name=%s", (str(user_id),name), True))[0]
             await self.event("create_requested", user_id, row["sv_id"], f"{server_type} {version}; port={port}")
-            return {"id":row["sv_id"],"port":port}
+            return {"id":row["sv_id"],"port":port,"reset_code":reset_code}
     async def create_result(self, server, user_id, ok):
         await self.query("UPDATE servers SET status=%s WHERE sv_id=%s", ("running" if ok else "error",server["id"]))
         await self.event("created" if ok else "create_failed", user_id, server["id"])
     async def get_server(self, user_id, name):
         rows = await self.query("SELECT sv_id,sv_port FROM servers WHERE dc_user_id=%s AND sv_name=%s AND status<>'deleted'", (str(user_id),name), True)
+        return rows[0] if rows else None
+    async def server_for_reset_code(self, reset_code):
+        rows = await self.query("SELECT sv_id,sv_port FROM servers WHERE reset_code=%s AND status IN ('running','stopped','error')", (reset_code.upper(),), True)
         return rows[0] if rows else None
     async def servers_for_user(self, user_id):
         return await self.query("SELECT sv_id,sv_name,sv_port FROM servers WHERE dc_user_id=%s AND status<>'deleted' ORDER BY sv_id", (str(user_id),), True)
@@ -163,7 +180,7 @@ async def provision(bot, interaction, name, server_type, version_data):
         except Exception:
             log.exception("failed to clean up incomplete server %s", server["port"])
     await bot.store.create_result(server, interaction.user.id, ok)
-    if ok: await interaction.followup.send(f"サーバーを作成しました。接続先: `{bot.address_for(server['port'])}`", ephemeral=True)
+    if ok: await interaction.followup.send(f"サーバーを作成しました。接続先: `{bot.address_for(server['port'])}`\nリセットコード: `{server['reset_code']}`", ephemeral=True)
     else: await interaction.followup.send("作成に失敗しました。管理者へ連絡してください。", ephemeral=True)
 
 class OwnerView(discord.ui.View):
@@ -251,7 +268,7 @@ class Bot(commands.Bot):
     def __init__(self, config): super().__init__(command_prefix="!",intents=discord.Intents.none()); self.config=config; self.store=Store(config); self.remote=Remote(config)
     async def setup_hook(self):
         await self.store.bootstrap()
-        self.tree.add_command(Hardcore(self)); self.cleanup.start(); await self.tree.sync()
+        await self.add_cog(ControlCog(self)); self.cleanup.start(); await self.tree.sync()
     def address_for(self, port):
         # 25401 -> hc01, 25410 -> hc10。BungeeCord の転送設定は VM 側で管理する。
         return f"hc{port - self.config.min_port + 1:02d}.{self.config.domain}"
@@ -269,8 +286,8 @@ class Bot(commands.Bot):
     @cleanup.before_loop
     async def before_cleanup(self): await self.wait_until_ready()
 
-class Hardcore(app_commands.Group):
-    def __init__(self, bot): super().__init__(name="hardcore",description="ハードコアサーバー管理"); self.bot=bot
+class ControlCog(commands.Cog):
+    def __init__(self, bot): self.bot=bot
     async def user(self, interaction): await self.bot.store.ensure_user(interaction.user)
     @app_commands.command(description="管理者権限を有効化します")
     async def admin(self, interaction, key: str):
@@ -291,13 +308,11 @@ class Hardcore(app_commands.Group):
         if not NAME_RE.fullmatch(name): await interaction.response.send_message("名前は英数字・`_`・`-` の 3〜32 文字にしてください。",ephemeral=True); return
         await interaction.response.send_message("Minecraft の EULA に同意しますか？\nhttps://aka.ms/MinecraftEULA",view=EulaView(self.bot,interaction.user.id,name),ephemeral=True)
     @app_commands.command(description="ワールドをリセットし、削除期限を延長します")
-    async def reset(self, interaction):
+    async def reset(self, interaction, code: str):
         await self.user(interaction)
-        servers=await self.bot.store.servers_for_user(interaction.user.id)
-        if not servers: await interaction.response.send_message("リセットできるサーバーはありません。",ephemeral=True); return
-        if len(servers) == 1:
-            await interaction.response.send_message("このサーバーのワールドをリセットしますか？",view=ResetConfirmView(self.bot,interaction.user.id,servers[0]),ephemeral=True); return
-        await interaction.response.send_message("リセットするサーバーを選択してください。",view=ResetSelectView(self.bot,interaction.user.id,servers),ephemeral=True)
+        server=await self.bot.store.server_for_reset_code(code)
+        if not server: await interaction.response.send_message("リセットコードが正しくないか、対象サーバーは利用できません。",ephemeral=True); return
+        await interaction.response.send_message("このサーバーのワールドをリセットしますか？",view=ResetConfirmView(self.bot,interaction.user.id,server),ephemeral=True)
     @app_commands.command(description="サーバーを削除し、作成枠を解放します")
     async def delete(self, interaction):
         await self.user(interaction)

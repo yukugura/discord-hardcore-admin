@@ -1,5 +1,7 @@
 -- discord-mc-admin の assets/create-table.sql 実行後に一度だけ適用する。
 ALTER TABLE servers ADD COLUMN last_reset_at DATETIME NULL;
+ALTER TABLE servers ADD COLUMN reset_code CHAR(8) NULL;
+ALTER TABLE servers ADD UNIQUE KEY unique_reset_code (reset_code);
 ALTER TABLE servers ADD UNIQUE KEY unique_port (sv_port);
 UPDATE servers SET last_reset_at = UTC_TIMESTAMP() WHERE last_reset_at IS NULL;
 
