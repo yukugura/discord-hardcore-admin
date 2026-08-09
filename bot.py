@@ -207,9 +207,12 @@ class Store:
 
 class Remote:
     def __init__(self, config): self.config = config
-    def run(self, action, port, server_type=None, version=None, url=None, voice_enabled=False):
-        if action not in {"create","reset","delete","status"} or not self.config.min_port <= port <= self.config.max_port: raise ValueError("不正な管理操作")
-        args = [action, str(port)]
+    def run(self, action, port=None, server_type=None, version=None, url=None, voice_enabled=False):
+        if action == "prune-backups":
+            args = [action, str(self.config.retention_days)]
+        else:
+            if action not in {"create","reset","delete","status"} or port is None or not self.config.min_port <= port <= self.config.max_port: raise ValueError("不正な管理操作")
+            args = [action, str(port)]
         if action == "create":
             if server_type not in {"vanilla","paper"} or not re.fullmatch(r"[0-9.]+", version or "") or not (url or "").startswith("https://"): raise ValueError("不正な作成情報")
             args += [server_type, version, url, "1" if voice_enabled else "0"]
@@ -344,6 +347,10 @@ class Bot(commands.Bot):
             try: ok = await asyncio.to_thread(self.remote.run,"delete",server["sv_port"])
             except Exception: log.exception("automatic deletion failed"); ok=False
             await self.store.deleted(server,ok)
+        try:
+            await asyncio.to_thread(self.remote.run, "prune-backups")
+        except Exception:
+            log.exception("could not prune expired world backups")
     @cleanup.before_loop
     async def before_cleanup(self): await self.wait_until_ready()
 

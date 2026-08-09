@@ -192,6 +192,7 @@ service="HC-$port.service"; dir="$MC_ROOT/servers/HC-$port"
 systemctl disable --now "$service" 2>/dev/null || true
 rm -f -- "/etc/systemd/system/$service"
 rm -rf -- "$dir"
+rm -rf -- "$BACKUP_ROOT/HC-$port"
 systemctl daemon-reload
 DELETE
 
@@ -201,6 +202,13 @@ set -Eeuo pipefail
 source /etc/default/hardcore-pool-admin
 [[ $EUID -eq 0 ]] || exit 1
 action="${1:-}"; port="${2:-}"
+if [[ "$action" == prune-backups ]]; then
+  retention_days="$port"
+  [[ "$retention_days" =~ ^[0-9]+$ ]] || exit 2
+  # BACKUP_ROOT/HC-<port>/<UTC timestamp>: only timestamp directories are targets.
+  find "$BACKUP_ROOT" -mindepth 2 -maxdepth 2 -type d -mtime +"$retention_days" -exec rm -rf -- {} +
+  exit 0
+fi
 [[ "$action" =~ ^(create|reset|delete|status)$ && "$port" =~ ^[0-9]+$ && "$port" -ge "$SV_MIN_PORT" && "$port" -le "$SV_MAX_PORT" ]] || exit 2
 dir="$MC_ROOT/servers/HC-$port"; service="HC-$port.service"
 case "$action" in
