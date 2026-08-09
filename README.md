@@ -37,6 +37,8 @@ sudo bash setup-hardcore-vm.sh
 
 既存環境のスクリプトの場所が異なる場合だけ、`SCRIPTS_DIR=/minecraft/実際の場所 sudo bash setup-hardcore-vm.sh` のように指定します。ダウンロード URL は Discord から渡さず、DB の `server_versions` に登録済みの値だけを使用します。
 
+セットアップは既存 `dc-mc-admin` を変更せず、`/etc/ufw/applications.d/hc-mc-admin` に `25401:25410/tcp` の UFW プロファイルを追加して許可します。UFW 自体の有効化は行いません。Simple Voice Chat 用の UDP ポートは、プラグイン導入時に別途追加します。
+
 ## 起動
 
 ```bash

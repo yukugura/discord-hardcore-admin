@@ -184,9 +184,19 @@ EOF
 cat >/etc/sudoers.d/hardcore-pool-admin <<EOF
 $MC_USER ALL=(root) NOPASSWD: /usr/local/sbin/hardcore-pool-admin *
 EOF
+cat >/etc/ufw/applications.d/hc-mc-admin <<EOF
+[hc-mc-admin]
+title=Hardcore Discord-Minecraft-Administrator
+description=Hardcore Minecraft server management by discord.py
+ports=$MIN_PORT:$MAX_PORT/tcp
+EOF
+if command -v ufw >/dev/null; then
+  ufw allow hc-mc-admin
+fi
 chmod 0755 "$HC_DIR/create.sh" "$HC_DIR/delete.sh" /usr/local/sbin/hardcore-pool-admin
 chmod 0440 /etc/sudoers.d/hardcore-pool-admin
 visudo -cf /etc/sudoers.d/hardcore-pool-admin
 
 echo "完了 ($MODE): $HC_DIR を追加しました。既存 /minecraft/scripts の内容は変更していません。"
 echo "BungeeCord は 25401-25410 を hc01-hc10 へ転送するよう設定してください。"
+echo "UFW プロファイル hc-mc-admin ($MIN_PORT:$MAX_PORT/tcp) を許可しました。UFW の有効化は手動で行ってください。"

@@ -338,7 +338,7 @@ class ControlCog(commands.Cog):
                 deleted_at=server["last_reset_at"].replace(tzinfo=timezone.utc)+timedelta(days=self.bot.config.retention_days)
                 deadline=deleted_at.astimezone(jst).strftime("%Y-%m-%d %H:%M JST")
             else: deadline="未設定"
-            embed.add_field(name=f"{server['sv_name']} — {state}",value=f"接続先: `{self.bot.address_for(server['sv_port'])}`\nバージョン: `{server['sv_type']} {server['sv_ver']}`\nリセットコード: `||{server['reset_code'] or '未発行'}||`\n自動削除予定: `{deadline}`",inline=False)
+            embed.add_field(name=f"{server['sv_name']} — {state}",value=f"接続先: `{self.bot.address_for(server['sv_port'])}`\nバージョン: `{server['sv_type']} {server['sv_ver']}`\nリセットコード: ||{server['reset_code'] or '未発行'}||\n自動削除予定: `{deadline}`",inline=False)
         await interaction.followup.send(embed=embed,ephemeral=True)
     @app_commands.command(description="サーバーを削除し、作成枠を解放します")
     async def delete(self, interaction):
