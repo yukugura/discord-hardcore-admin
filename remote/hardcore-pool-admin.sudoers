@@ -1,0 +1,1 @@
+minecraft ALL=(root) NOPASSWD: /usr/local/sbin/hardcore-pool-admin *

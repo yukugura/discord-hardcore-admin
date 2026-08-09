@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# 既存 discord-mc-admin の operation-script を使うための root 専用ラッパー。
+set -Eeuo pipefail
+[[ $EUID -eq 0 ]] || { echo 'root が必要です' >&2; exit 1; }
+[[ -r /etc/default/hardcore-pool-admin ]] && source /etc/default/hardcore-pool-admin
+
+ROOT="${MC_ROOT:-/minecraft}"
+SCRIPTS_DIR="${SCRIPTS_DIR:-$ROOT/scripts}"
+MIN_PORT="${SV_MIN_PORT:-25501}"
+MAX_PORT="${SV_MAX_PORT:-25510}"
+TYPE="${SERVER_TYPE:-paper}"
+BACKUPS="${BACKUP_ROOT:-/minecraft/backups/hardcore}"
+action="${1:-}"; port="${2:-}"
+[[ "$action" =~ ^(create|reset|delete)$ && "$port" =~ ^[0-9]+$ && "$port" -ge "$MIN_PORT" && "$port" -le "$MAX_PORT" ]] || exit 2
+dir="$ROOT/servers/SV-$port"; service="SV-$port.service"
+
+case "$action" in
+  create)
+    type="${3:-}"; version="${4:-}"; url="${5:-}"
+    [[ "$type" =~ ^(vanilla|paper)$ && "$version" =~ ^[0-9.]+$ ]] || exit 2
+    [[ "$type" == vanilla || "$url" =~ ^https:// ]] || exit 2
+    if [[ "${CREATE_STYLE:-legacy}" == legacy ]]; then
+      "$SCRIPTS_DIR/CREATE-SERVER-SUDO.sh" "HC-$port" "$type" "$version" "$port"
+    else
+      "$SCRIPTS_DIR/CREATE-SERVER-SUDO.sh" "$port" "$type" "$version" "$url"
+    fi
+    sed -i 's/^hardcore=.*/hardcore=true/' "$dir/server.properties"
+    systemctl restart "$service"
+    ;;
+  reset)
+    stamp="$(date -u +%Y%m%dT%H%M%SZ)"; dest="$BACKUPS/SV-$port/$stamp"
+    install -d -m 0750 "$dest"; systemctl stop "$service"
+    for world in world world_nether world_the_end; do [[ -e "$dir/$world" ]] && mv -- "$dir/$world" "$dest/$world"; done
+    systemctl start "$service"
+    ;;
+  delete)
+    "$SCRIPTS_DIR/DELETE-SERVER-SUDO.sh" "$port"
+    ;;
+esac
