@@ -202,11 +202,22 @@ set -Eeuo pipefail
 source /etc/default/hardcore-pool-admin
 [[ $EUID -eq 0 ]] || exit 1
 action="${1:-}"; port="${2:-}"
+prune_server_backups() {
+  local backup_dir="$1" retention_days="$2"
+  [[ -d "$backup_dir" ]] || return 0
+  find "$backup_dir" -mindepth 1 -maxdepth 1 -type d -mtime +"$retention_days" -exec rm -rf -- {} +
+  # Keep the 10 newest timestamp directories, even when all are within retention.
+  find "$backup_dir" -mindepth 1 -maxdepth 1 -type d -printf '%T@:%p\0' \
+    | sort -z -n \
+    | head -z -n -10 \
+    | cut -z -d: -f2- \
+    | xargs -0 -r rm -rf --
+}
 if [[ "$action" == prune-backups ]]; then
   retention_days="$port"
   [[ "$retention_days" =~ ^[0-9]+$ ]] || exit 2
   # BACKUP_ROOT/HC-<port>/<UTC timestamp>: only timestamp directories are targets.
-  find "$BACKUP_ROOT" -mindepth 2 -maxdepth 2 -type d -mtime +"$retention_days" -exec rm -rf -- {} +
+  for backup_dir in "$BACKUP_ROOT"/HC-*; do prune_server_backups "$backup_dir" "$retention_days"; done
   exit 0
 fi
 [[ "$action" =~ ^(create|reset|delete|status)$ && "$port" =~ ^[0-9]+$ && "$port" -ge "$SV_MIN_PORT" && "$port" -le "$SV_MAX_PORT" ]] || exit 2
@@ -214,10 +225,13 @@ dir="$MC_ROOT/servers/HC-$port"; service="HC-$port.service"
 case "$action" in
   create) "$HARDCORE_SCRIPTS_DIR/create.sh" "$port" "${3:-}" "${4:-}" "${5:-}" "${6:-0}" ;;
   reset)
+    retention_days="${3:-30}"
+    [[ "$retention_days" =~ ^[0-9]+$ ]] || exit 2
     stamp="$(date -u +%Y%m%dT%H%M%SZ)"; backup="$BACKUP_ROOT/HC-$port/$stamp"
     install -d -o "$MC_USER" -g "$MC_USER" -m 0750 "$backup"
     systemctl stop "$service"
     for world in world world_nether world_the_end; do [[ -e "$dir/$world" ]] && mv -- "$dir/$world" "$backup/$world"; done
+    prune_server_backups "$BACKUP_ROOT/HC-$port" "$retention_days"
     systemctl start "$service"
     ;;
   delete) "$HARDCORE_SCRIPTS_DIR/delete.sh" "$port" ;;

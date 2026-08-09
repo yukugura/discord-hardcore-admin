@@ -213,6 +213,7 @@ class Remote:
         else:
             if action not in {"create","reset","delete","status"} or port is None or not self.config.min_port <= port <= self.config.max_port: raise ValueError("不正な管理操作")
             args = [action, str(port)]
+            if action == "reset": args.append(str(self.config.retention_days))
         if action == "create":
             if server_type not in {"vanilla","paper"} or not re.fullmatch(r"[0-9.]+", version or "") or not (url or "").startswith("https://"): raise ValueError("不正な作成情報")
             args += [server_type, version, url, "1" if voice_enabled else "0"]

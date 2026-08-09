@@ -39,7 +39,7 @@ sudo bash setup-hardcore-vm.sh
 
 セットアップは既存 `dc-mc-admin` を変更せず、`/etc/ufw/applications.d/hc-mc-admin` に `25401:25410/tcp` と Simple Voice Chat 用の `24401:24410/udp` の UFW プロファイルを追加して許可します。UFW 自体の有効化は行いません。VCありで作成したPaperサーバーだけにSimple Voice Chatを導入し、UDPポートはMinecraftポートから1000を引いた値になります。VCなしではDB登録済みのPaper最新版を、プラグインなしで起動します。
 
-ワールドリセット時の旧ワールドは `/minecraft/backups/hardcore/HC-<port>/<UTC時刻>/` に退避されます。`RESET_RETENTION_DAYS`（既定30日）を過ぎたバックアップは6時間ごとのクリーンアップで削除され、サーバーを削除するとそのサーバーのバックアップ一式も削除されます。
+ワールドリセット時の旧ワールドは `/minecraft/backups/hardcore/HC-<port>/<UTC時刻>/` に退避されます。各サーバーのバックアップは最新10件まで保持し、`RESET_RETENTION_DAYS`（既定30日）を過ぎたものは6時間ごとのクリーンアップで削除されます。サーバーを削除すると、そのサーバーのバックアップ一式も削除されます。
 
 ## 起動
 
