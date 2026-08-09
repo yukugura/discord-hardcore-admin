@@ -157,7 +157,7 @@ set -Eeuo pipefail
 source /etc/default/hardcore-pool-admin
 [[ $EUID -eq 0 ]] || exit 1
 action="${1:-}"; port="${2:-}"
-[[ "$action" =~ ^(create|reset|delete)$ && "$port" =~ ^[0-9]+$ && "$port" -ge "$SV_MIN_PORT" && "$port" -le "$SV_MAX_PORT" ]] || exit 2
+[[ "$action" =~ ^(create|reset|delete|status)$ && "$port" =~ ^[0-9]+$ && "$port" -ge "$SV_MIN_PORT" && "$port" -le "$SV_MAX_PORT" ]] || exit 2
 dir="$MC_ROOT/servers/HC-$port"; service="HC-$port.service"
 case "$action" in
   create) "$HARDCORE_SCRIPTS_DIR/create.sh" "$port" "${3:-}" "${4:-}" "${5:-}" ;;
@@ -169,6 +169,7 @@ case "$action" in
     systemctl start "$service"
     ;;
   delete) "$HARDCORE_SCRIPTS_DIR/delete.sh" "$port" ;;
+  status) systemctl is-active --quiet "$service" ;;
 esac
 ADMIN
 

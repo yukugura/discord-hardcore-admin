@@ -1,6 +1,7 @@
 """DB を正として Discord から Minecraft ハードコア鯖を提供するボット。"""
 import asyncio, logging, os, re, secrets, shlex, string
 from dataclasses import dataclass
+from datetime import timedelta, timezone
 
 import discord
 import mysql.connector
@@ -131,7 +132,7 @@ class Store:
         rows = await self.query("SELECT sv_id,sv_port FROM servers WHERE reset_code=%s AND status IN ('running','stopped','error')", (reset_code.upper(),), True)
         return rows[0] if rows else None
     async def servers_for_user(self, user_id):
-        return await self.query("SELECT sv_id,sv_name,sv_port FROM servers WHERE dc_user_id=%s AND status<>'deleted' ORDER BY sv_id", (str(user_id),), True)
+        return await self.query("SELECT sv_id,sv_name,sv_type,sv_ver,sv_port,status,last_reset_at,reset_code FROM servers WHERE dc_user_id=%s AND status<>'deleted' ORDER BY sv_id", (str(user_id),), True)
     async def reset_result(self, server, user_id, ok):
         if ok: await self.query("UPDATE servers SET status='running',last_reset_at=UTC_TIMESTAMP() WHERE sv_id=%s", (server["sv_id"],))
         await self.event("reset" if ok else "reset_failed", user_id, server["sv_id"])
@@ -147,7 +148,7 @@ class Store:
 class Remote:
     def __init__(self, config): self.config = config
     def run(self, action, port, server_type=None, version=None, url=None):
-        if action not in {"create","reset","delete"} or not self.config.min_port <= port <= self.config.max_port: raise ValueError("不正な管理操作")
+        if action not in {"create","reset","delete","status"} or not self.config.min_port <= port <= self.config.max_port: raise ValueError("不正な管理操作")
         args = [action, str(port)]
         if action == "create":
             if server_type not in {"vanilla","paper"} or not re.fullmatch(r"[0-9.]+", version or "") or not (url or "").startswith("https://"): raise ValueError("不正な作成情報")
@@ -296,23 +297,49 @@ class ControlCog(commands.Cog):
         await self.bot.store.query("UPDATE users SET perm_name='admin' WHERE dc_user_id=%s",(str(interaction.user.id),)); await self.bot.store.event("admin_granted",interaction.user.id)
         await interaction.response.send_message("admin 権限を有効化しました。",ephemeral=True)
     @app_commands.command(description="EULA 同意後にハードコアサーバーを作成します")
-    async def create(self, interaction):
+    @app_commands.describe(name="admin は作成するサーバー名を必ず入力")
+    async def create(self, interaction, name: str | None = None):
         await self.user(interaction)
-        name=f"hc-{interaction.user.id}"
-        await interaction.response.send_message("Minecraft の EULA に同意しますか？\nhttps://aka.ms/MinecraftEULA",view=EulaView(self.bot,interaction.user.id,name),ephemeral=True)
-    @app_commands.command(name="admin-create", description="admin 用: 名前を指定して追加のサーバーを作成します")
-    async def admin_create(self, interaction, name: str):
-        await self.user(interaction)
-        if await self.bot.store.permission(interaction.user.id) != "admin":
-            await interaction.response.send_message("このコマンドは admin 専用です。",ephemeral=True); return
-        if not NAME_RE.fullmatch(name): await interaction.response.send_message("名前は英数字・`_`・`-` の 3〜32 文字にしてください。",ephemeral=True); return
+        if await self.bot.store.permission(interaction.user.id) == "admin":
+            if not name:
+                await interaction.response.send_message("admin は `name` を入力してサーバー名を指定してください。",ephemeral=True); return
+            if not NAME_RE.fullmatch(name):
+                await interaction.response.send_message("名前は英数字・`_`・`-` の 3〜32 文字にしてください。",ephemeral=True); return
+        else:
+            name=f"hc-{interaction.user.id}"
         await interaction.response.send_message("Minecraft の EULA に同意しますか？\nhttps://aka.ms/MinecraftEULA",view=EulaView(self.bot,interaction.user.id,name),ephemeral=True)
     @app_commands.command(description="ワールドをリセットし、削除期限を延長します")
-    async def reset(self, interaction, code: str):
+    @app_commands.describe(code="他ユーザーのサーバーをリセットする場合に入力")
+    async def reset(self, interaction, code: str | None = None):
         await self.user(interaction)
-        server=await self.bot.store.server_for_reset_code(code)
-        if not server: await interaction.response.send_message("リセットコードが正しくないか、対象サーバーは利用できません。",ephemeral=True); return
-        await interaction.response.send_message("このサーバーのワールドをリセットしますか？",view=ResetConfirmView(self.bot,interaction.user.id,server),ephemeral=True)
+        if code:
+            server=await self.bot.store.server_for_reset_code(code)
+            if not server: await interaction.response.send_message("リセットコードが正しくないか、対象サーバーは利用できません。",ephemeral=True); return
+            await interaction.response.send_message("このサーバーのワールドをリセットしますか？",view=ResetConfirmView(self.bot,interaction.user.id,server),ephemeral=True)
+            return
+        servers=await self.bot.store.servers_for_user(interaction.user.id)
+        if not servers: await interaction.response.send_message("リセットできる自分のサーバーはありません。",ephemeral=True); return
+        if len(servers) == 1:
+            await interaction.response.send_message("このサーバーのワールドをリセットしますか？",view=ResetConfirmView(self.bot,interaction.user.id,servers[0]),ephemeral=True); return
+        await interaction.response.send_message("リセットする自分のサーバーを選択してください。",view=ResetSelectView(self.bot,interaction.user.id,servers),ephemeral=True)
+    @app_commands.command(description="自分のサーバーの起動状態と削除予定を表示します")
+    async def status(self, interaction):
+        await self.user(interaction)
+        servers=await self.bot.store.servers_for_user(interaction.user.id)
+        if not servers:
+            await interaction.response.send_message("作成済みのサーバーはありません。",ephemeral=True); return
+        await interaction.response.defer(ephemeral=True,thinking=True)
+        checks=await asyncio.gather(*[asyncio.to_thread(self.bot.remote.run,"status",server["sv_port"]) for server in servers],return_exceptions=True)
+        jst=timezone(timedelta(hours=9))
+        embed=discord.Embed(title="サーバー状態",color=discord.Color.green())
+        for server, check in zip(servers,checks):
+            state="起動中" if check is True else ("停止中" if check is False else "状態確認失敗")
+            if server["last_reset_at"]:
+                deleted_at=server["last_reset_at"].replace(tzinfo=timezone.utc)+timedelta(days=self.bot.config.retention_days)
+                deadline=deleted_at.astimezone(jst).strftime("%Y-%m-%d %H:%M JST")
+            else: deadline="未設定"
+            embed.add_field(name=f"{server['sv_name']} — {state}",value=f"接続先: `{self.bot.address_for(server['sv_port'])}`\nバージョン: `{server['sv_type']} {server['sv_ver']}`\nリセットコード: `||{server['reset_code'] or '未発行'}||`\n自動削除予定: `{deadline}`",inline=False)
+        await interaction.followup.send(embed=embed,ephemeral=True)
     @app_commands.command(description="サーバーを削除し、作成枠を解放します")
     async def delete(self, interaction):
         await self.user(interaction)

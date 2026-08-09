@@ -2,12 +2,13 @@
 
 以前の [discord-mc-admin](https://github.com/yukugura/discord-mc-admin) の MySQL・Minecraft VM 構成を使い、Discord のコマンドツリーでハードコアサーバーを提供します。
 
-- `/create` — 名前入力なし。EULA 同意（はい/いいえ）後に近接 VC の有無を選択。`default` ユーザーは Discord ID ごとに 1 台まで作成
-- `/admin-create name:<名前>` — admin 専用。追加サーバーを作る場合だけ名前を入力
+- `/create` — EULA 同意（はい/いいえ）後に近接 VC の有無を選択。`default` ユーザーは名前なしで 1 台まで作成。admin は `name` を必ず入力して複数台作成可能
 - 近接 VC ありは Paper を選び、DB の `server_versions` に登録された対応バージョンからプルダウン選択。なしは選択なしで最新 Vanilla を作成
 - `/admin key:<ADMIN_KEY>` — `admin` 権限に変更。admin は複数台作成可能
-- `/reset code:<8桁コード>` — コードを知る Discord ユーザーなら誰でも「はい / いいえ」で確認してリセット
+- `/reset` — 自分のサーバーを「はい / いいえ」で確認してリセット。admin が複数台持つ場合は対象選択を表示
+- `/reset code:<8桁コード>` — 他ユーザーのサーバーをリセットする場合だけコードを入力
 - `/delete` — 「はい / いいえ」で確認してサーバーを完全に削除し、作成枠を解放
+- `/status` — 自分のサーバーの実際の起動状態、接続先、リセットコード（spoiler）、自動削除予定を表示
 - バックグラウンド処理が、最後のリセット（作成直後を含む）から `RESET_RETENTION_DAYS` を過ぎたサーバーを約 6 時間ごとに自動削除
 - `server_events` テーブルに作成要求・成功/失敗・リセット成功/失敗・自動削除成功/失敗・admin 権限の付与を記録
 
