@@ -1,11 +1,6 @@
--- Run this once as a MariaDB/MySQL administrator.
--- It leaves mc_admin_db untouched so discord-mc-admin can continue using it.
-
-CREATE DATABASE IF NOT EXISTS `mc_hc_admin`
-  CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-
-GRANT ALL PRIVILEGES ON `mc_hc_admin`.* TO `minecraft`@`%`;
-FLUSH PRIVILEGES;
+-- Run this once after creating mc_hc_admin and granting its privileges.
+-- It never writes to mc_admin_db.  The only source query imports the
+-- version dropdown data so the existing discord-mc-admin remains untouched.
 
 USE `mc_hc_admin`;
 
@@ -68,13 +63,9 @@ CREATE TABLE IF NOT EXISTS `server_events` (
   CONSTRAINT `fk_event_user` FOREIGN KEY (`dc_user_id`) REFERENCES `users` (`dc_user_id`) ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Copy shared reference data and only the Hardcore server range.
-INSERT IGNORE INTO `perm_limits` SELECT * FROM `mc_admin_db`.`perm_limits`;
-INSERT IGNORE INTO `users` SELECT * FROM `mc_admin_db`.`users`;
+-- Initial permissions for this independent database.
+INSERT IGNORE INTO `perm_limits` (`perm_name`,`max_sv`) VALUES
+  ('default',1), ('premium',3), ('admin',999);
+
+-- Copy version choices only. This SELECT does not change mc_admin_db.
 INSERT IGNORE INTO `server_versions` SELECT * FROM `mc_admin_db`.`server_versions`;
-INSERT IGNORE INTO `servers`
-  SELECT * FROM `mc_admin_db`.`servers` WHERE `sv_port` BETWEEN 25401 AND 25410;
-INSERT IGNORE INTO `server_events`
-  SELECT * FROM `mc_admin_db`.`server_events`
-  WHERE `sv_id` IS NULL
-     OR `sv_id` IN (SELECT `sv_id` FROM `servers` WHERE `sv_port` BETWEEN 25401 AND 25410);

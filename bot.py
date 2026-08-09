@@ -44,6 +44,46 @@ class Store:
         conn = mysql.connector.connect(**self.config.db)
         try:
             cur = conn.cursor()
+            # A dedicated mc_hc_admin database starts empty.  Create the
+            # complete application schema before applying incremental upgrades.
+            cur.execute("""CREATE TABLE IF NOT EXISTS perm_limits (
+                perm_name VARCHAR(50) NOT NULL PRIMARY KEY,
+                max_sv INT NOT NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""")
+            cur.execute("INSERT IGNORE INTO perm_limits(perm_name,max_sv) VALUES ('default',1),('premium',3),('admin',999)")
+            cur.execute("""CREATE TABLE IF NOT EXISTS users (
+                dc_user_id VARCHAR(50) NOT NULL PRIMARY KEY,
+                dc_user_name VARCHAR(255) NOT NULL,
+                perm_name VARCHAR(50) NOT NULL,
+                dc_created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
+                KEY perm_name (perm_name),
+                CONSTRAINT users_ibfk_1 FOREIGN KEY (perm_name) REFERENCES perm_limits(perm_name) ON UPDATE CASCADE ON DELETE RESTRICT
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""")
+            cur.execute("""CREATE TABLE IF NOT EXISTS servers (
+                sv_id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                dc_user_id VARCHAR(50) NOT NULL,
+                sv_name VARCHAR(255) NOT NULL,
+                sv_type VARCHAR(50) NOT NULL,
+                sv_ver VARCHAR(20) NOT NULL,
+                sv_port INT NULL,
+                status ENUM('running','stopped','creating','deleting','deleted','error') NOT NULL DEFAULT 'error',
+                sv_created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
+                last_reset_at DATETIME NULL,
+                reset_code CHAR(8) NULL,
+                UNIQUE KEY unique_port (sv_port),
+                UNIQUE KEY unique_reset_code (reset_code),
+                KEY idx_servers_owner_name_nonunique (dc_user_id,sv_name),
+                CONSTRAINT servers_ibfk_1 FOREIGN KEY (dc_user_id) REFERENCES users(dc_user_id) ON UPDATE CASCADE ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""")
+            cur.execute("""CREATE TABLE IF NOT EXISTS server_versions (
+                sv_ver_id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                sv_type VARCHAR(50) NOT NULL,
+                sv_ver VARCHAR(20) NOT NULL,
+                build_ver INT NOT NULL DEFAULT 1,
+                download_url VARCHAR(255) NOT NULL DEFAULT '1',
+                is_supported BOOLEAN NOT NULL DEFAULT TRUE,
+                UNIQUE KEY sv_type (sv_type,sv_ver,build_ver)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""")
             cur.execute("SHOW COLUMNS FROM servers LIKE 'last_reset_at'")
             if cur.fetchone() is None:
                 cur.execute("ALTER TABLE servers ADD COLUMN last_reset_at DATETIME NULL")
