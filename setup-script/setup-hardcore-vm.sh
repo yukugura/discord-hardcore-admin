@@ -39,6 +39,9 @@ fi
 
 HC_DIR="$MC_ROOT/scripts/hardcore"
 CONFIG_DIR="$MC_ROOT/config"
+VOICECHAT_PLUGIN_URL="https://cdn.modrinth.com/data/9eGKb6K1/versions/62MVmInV/voicechat-bukkit-2.6.21.jar"
+VOICECHAT_PLUGIN="$CONFIG_DIR/voicechat-bukkit.jar"
+VOICECHAT_TEMPLATE="$CONFIG_DIR/voicechat-server.properties"
 install -d -o "$MC_USER" -g "$MC_USER" -m 0750 "$MC_ROOT/servers" "$MC_ROOT/backups/hardcore"
 install -d -o root -g root -m 0755 "$HC_DIR"
 if [[ "$MODE" == existing ]]; then
@@ -83,15 +86,48 @@ EOF
   chmod 754 "$CONFIG_DIR/stop.sh"
 fi
 
+# Keep the Simple Voice Chat plugin and its unmodified configuration template
+# outside individual servers. Only VC-enabled Paper servers receive a copy.
+command -v curl >/dev/null || { echo 'curl が必要です。' >&2; exit 1; }
+if [[ ! -f "$VOICECHAT_PLUGIN" ]]; then
+  curl --fail --location --proto '=https' --tlsv1.2 "$VOICECHAT_PLUGIN_URL" -o "$VOICECHAT_PLUGIN"
+  chown "$MC_USER:$MC_USER" "$VOICECHAT_PLUGIN"; chmod 0644 "$VOICECHAT_PLUGIN"
+fi
+if [[ ! -f "$VOICECHAT_TEMPLATE" ]]; then
+  cat >"$VOICECHAT_TEMPLATE" <<'EOF'
+# Simple Voice Chat server config
+port=24401
+bind_address=
+max_voice_distance=48.0
+whisper_distance=24.0
+codec=VOIP
+mtu_size=1024
+tcp_rate_limit=16
+keep_alive=1000
+enable_groups=true
+voice_host=
+allow_recording=true
+spectator_interaction=false
+spectator_player_possession=false
+force_voice_chat=false
+login_timeout=10000
+broadcast_range=-1.0
+allow_pings=true
+EOF
+  chown "$MC_USER:$MC_USER" "$VOICECHAT_TEMPLATE"; chmod 0644 "$VOICECHAT_TEMPLATE"
+fi
+
 cat >"$HC_DIR/create.sh" <<'CREATE'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 source /etc/default/hardcore-pool-admin
 [[ $EUID -eq 0 ]] || exit 1
-port="${1:-}"; type="${2:-}"; version="${3:-}"; paper_url="${4:-}"
+port="${1:-}"; type="${2:-}"; version="${3:-}"; paper_url="${4:-}"; voice_enabled="${5:-0}"
 [[ "$port" =~ ^[0-9]+$ && "$port" -ge "$SV_MIN_PORT" && "$port" -le "$SV_MAX_PORT" ]] || exit 2
 [[ "$type" =~ ^(vanilla|paper)$ && "$version" =~ ^[0-9.]+$ ]] || exit 2
+[[ "$voice_enabled" =~ ^[01]$ ]] || exit 2
 dir="$MC_ROOT/servers/HC-$port"; service="HC-$port.service"
+config_dir="$MC_ROOT/config"
 [[ ! -e "$dir" ]] || { echo '同じポートのサーバーが既にあります。' >&2; exit 1; }
 install -d -o "$MC_USER" -g "$MC_USER" -m 0750 "$dir"
 if [[ "$type" == paper ]]; then
@@ -109,12 +145,20 @@ urllib.request.urlretrieve(metadata['downloads']['server']['url'],os.environ['MC
 PY
 fi
 # discord-mc-admin と同じ config テンプレートを使い、HC 用の値だけ置換する。
-config_dir="$MC_ROOT/config"
 cp "$config_dir/server.properties" "$dir/server.properties"
 sed -i "s/^server-port=.*/server-port=$port/; s/^hardcore=.*/hardcore=true/" "$dir/server.properties"
 cp "$config_dir/eula.txt" "$dir/eula.txt"
 sed -i 's/^eula=.*/eula=true/' "$dir/eula.txt"
 [[ "$type" == paper ]] && cp "$config_dir/spigot.yml" "$dir/spigot.yml"
+if [[ "$voice_enabled" == 1 ]]; then
+  [[ "$type" == paper && -f "$config_dir/voicechat-bukkit.jar" && -f "$config_dir/voicechat-server.properties" ]] || { echo 'Simple Voice Chat のテンプレートがありません。' >&2; exit 1; }
+  voice_port=$((port - 1000))
+  install -d -o "$MC_USER" -g "$MC_USER" -m 0750 "$dir/plugins/voicechat"
+  install -o "$MC_USER" -g "$MC_USER" -m 0644 "$config_dir/voicechat-bukkit.jar" "$dir/plugins/voicechat-bukkit.jar"
+  cp "$config_dir/voicechat-server.properties" "$dir/plugins/voicechat/voicechat-server.properties"
+  sed -i "s/^port=.*/port=$voice_port/" "$dir/plugins/voicechat/voicechat-server.properties"
+  chown "$MC_USER:$MC_USER" "$dir/plugins/voicechat/voicechat-server.properties"
+fi
 chown -R "$MC_USER:$MC_USER" "$dir"
 chmod 754 "$dir/$version.jar"
 screen_name="HC-$port"
@@ -160,7 +204,7 @@ action="${1:-}"; port="${2:-}"
 [[ "$action" =~ ^(create|reset|delete|status)$ && "$port" =~ ^[0-9]+$ && "$port" -ge "$SV_MIN_PORT" && "$port" -le "$SV_MAX_PORT" ]] || exit 2
 dir="$MC_ROOT/servers/HC-$port"; service="HC-$port.service"
 case "$action" in
-  create) "$HARDCORE_SCRIPTS_DIR/create.sh" "$port" "${3:-}" "${4:-}" "${5:-}" ;;
+  create) "$HARDCORE_SCRIPTS_DIR/create.sh" "$port" "${3:-}" "${4:-}" "${5:-}" "${6:-0}" ;;
   reset)
     stamp="$(date -u +%Y%m%dT%H%M%SZ)"; backup="$BACKUP_ROOT/HC-$port/$stamp"
     install -d -o "$MC_USER" -g "$MC_USER" -m 0750 "$backup"
@@ -188,7 +232,7 @@ cat >/etc/ufw/applications.d/hc-mc-admin <<EOF
 [hc-mc-admin]
 title=Hardcore Discord-Minecraft-Administrator
 description=Hardcore Minecraft server management by discord.py
-ports=$MIN_PORT:$MAX_PORT/tcp
+ports=$MIN_PORT:$MAX_PORT/tcp|$((MIN_PORT - 1000)):$((MAX_PORT - 1000))/udp
 EOF
 if command -v ufw >/dev/null; then
   ufw allow hc-mc-admin

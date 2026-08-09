@@ -81,6 +81,7 @@ class Store:
                 sv_created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
                 last_reset_at DATETIME NULL,
                 reset_code CHAR(8) NULL,
+                voice_enabled BOOLEAN NOT NULL DEFAULT FALSE,
                 UNIQUE KEY unique_port (sv_port),
                 UNIQUE KEY unique_reset_code (reset_code),
                 KEY idx_servers_owner_name_nonunique (dc_user_id,sv_name),
@@ -99,6 +100,10 @@ class Store:
             if cur.fetchone()[0] == 0:
                 cur.executemany("INSERT INTO server_versions(sv_type,sv_ver,build_ver,download_url,is_supported) VALUES(%s,%s,%s,%s,%s)", DEFAULT_VERSION_ROWS)
                 log.info("DB bootstrap: added %s default server versions", len(DEFAULT_VERSION_ROWS))
+            cur.execute("SHOW COLUMNS FROM servers LIKE 'voice_enabled'")
+            if cur.fetchone() is None:
+                cur.execute("ALTER TABLE servers ADD COLUMN voice_enabled BOOLEAN NOT NULL DEFAULT FALSE")
+                log.info("DB migration: added servers.voice_enabled")
             cur.execute("SHOW COLUMNS FROM servers LIKE 'last_reset_at'")
             if cur.fetchone() is None:
                 cur.execute("ALTER TABLE servers ADD COLUMN last_reset_at DATETIME NULL")
@@ -151,7 +156,7 @@ class Store:
         rows = await self.versions(server_type)
         if not rows: raise RuntimeError(f"{server_type} の利用可能なバージョンが DB にありません")
         return rows[0]
-    async def reserve(self, user_id, name, server_type, version):
+    async def reserve(self, user_id, name, server_type, version, voice_enabled=False):
         async with self.port_lock:
             perm = await self.permission(user_id)
             if perm == "default":
@@ -169,7 +174,7 @@ class Store:
             for _ in range(10):
                 reset_code = ''.join(secrets.choice(alphabet) for _ in range(8))
                 try:
-                    await self.query("INSERT INTO servers(dc_user_id,sv_name,sv_type,sv_ver,sv_port,status,last_reset_at,reset_code) VALUES(%s,%s,%s,%s,%s,'creating',UTC_TIMESTAMP(),%s)", (str(user_id),name,server_type,version,port,reset_code))
+                    await self.query("INSERT INTO servers(dc_user_id,sv_name,sv_type,sv_ver,sv_port,status,last_reset_at,reset_code,voice_enabled) VALUES(%s,%s,%s,%s,%s,'creating',UTC_TIMESTAMP(),%s,%s)", (str(user_id),name,server_type,version,port,reset_code,voice_enabled))
                     break
                 except mysql.connector.IntegrityError:
                     continue
@@ -202,12 +207,12 @@ class Store:
 
 class Remote:
     def __init__(self, config): self.config = config
-    def run(self, action, port, server_type=None, version=None, url=None):
+    def run(self, action, port, server_type=None, version=None, url=None, voice_enabled=False):
         if action not in {"create","reset","delete","status"} or not self.config.min_port <= port <= self.config.max_port: raise ValueError("不正な管理操作")
         args = [action, str(port)]
         if action == "create":
             if server_type not in {"vanilla","paper"} or not re.fullmatch(r"[0-9.]+", version or "") or not (url or "").startswith("https://"): raise ValueError("不正な作成情報")
-            args += [server_type, version, url]
+            args += [server_type, version, url, "1" if voice_enabled else "0"]
         client = paramiko.SSHClient(); client.load_system_host_keys(); client.set_missing_host_key_policy(paramiko.RejectPolicy())
         try:
             client.connect(**self.config.ssh, look_for_keys=not bool(self.config.ssh["password"]), allow_agent=False, timeout=15)
@@ -218,15 +223,15 @@ class Remote:
             return code == 0
         finally: client.close()
 
-async def provision(bot, interaction, name, server_type, version_data):
+async def provision(bot, interaction, name, server_type, version_data, voice_enabled=False):
     await interaction.response.defer(ephemeral=True, thinking=True)
-    try: server = await bot.store.reserve(interaction.user.id, name, server_type, version_data["sv_ver"])
+    try: server = await bot.store.reserve(interaction.user.id, name, server_type, version_data["sv_ver"], voice_enabled)
     except (ValueError, CapacityError) as e: await interaction.followup.send(str(e), ephemeral=True); return
     except Exception: log.exception("reserve failed"); await interaction.followup.send("作成枠を確保できませんでした。", ephemeral=True); return
     if server is None:
         await interaction.followup.send("すでにサーバーを作成済みです。default 権限では 1 人 1 台までです。", ephemeral=True); return
     url = version_data["download_url"] if server_type == "paper" else "https://example.invalid/unused.jar"
-    try: ok = await asyncio.to_thread(bot.remote.run, "create", server["port"], server_type, version_data["sv_ver"], url)
+    try: ok = await asyncio.to_thread(bot.remote.run, "create", server["port"], server_type, version_data["sv_ver"], url, voice_enabled)
     except Exception: log.exception("create failed"); ok = False
     if not ok:
         # 作成途中にできたサービス・ディレクトリを残すと、次回作成を妨げる。
@@ -258,18 +263,18 @@ class ProximityView(OwnerView):
         try: versions = await self.bot.store.versions("paper")
         except Exception: log.exception("versions failed"); await interaction.response.send_message("バージョン一覧を取得できませんでした。", ephemeral=True); return
         if not versions: await interaction.response.send_message("利用可能な Paper バージョンがありません。", ephemeral=True); return
-        await interaction.response.send_message("Paper のバージョンを選択してください。", view=VersionView(self.bot,self.owner,self.name,versions), ephemeral=True); self.stop()
-    @discord.ui.button(label="なし（最新 Vanilla）", style=discord.ButtonStyle.secondary)
+        await interaction.response.send_message("Paper のバージョンを選択してください。", view=VersionView(self.bot,self.owner,self.name,versions,True), ephemeral=True); self.stop()
+    @discord.ui.button(label="なし（最新 Paper）", style=discord.ButtonStyle.secondary)
     async def vanilla(self, interaction, _):
-        try: version = await self.bot.store.latest("vanilla")
+        try: version = await self.bot.store.latest("paper")
         except Exception: log.exception("latest failed"); await interaction.response.send_message("最新バージョンを取得できませんでした。", ephemeral=True); return
-        self.stop(); await provision(self.bot, interaction, self.name, "vanilla", version)
+        self.stop(); await provision(self.bot, interaction, self.name, "paper", version, False)
 
 class VersionView(OwnerView):
-    def __init__(self, bot, owner, name, versions):
-        super().__init__(bot,owner,name); self.versions={v["sv_ver"]:v for v in versions}
+    def __init__(self, bot, owner, name, versions, voice_enabled):
+        super().__init__(bot,owner,name); self.versions={v["sv_ver"]:v for v in versions}; self.voice_enabled=voice_enabled
         self.add_item(VersionSelect(self.versions))
-    async def chosen(self, interaction, version): self.stop(); await provision(self.bot, interaction, self.name, "paper", self.versions[version])
+    async def chosen(self, interaction, version): self.stop(); await provision(self.bot, interaction, self.name, "paper", self.versions[version], self.voice_enabled)
 class VersionSelect(discord.ui.Select):
     def __init__(self, versions): super().__init__(placeholder="Paper バージョンを選択", options=[discord.SelectOption(label=v) for v in versions])
     async def callback(self, interaction): await self.view.chosen(interaction, self.values[0])

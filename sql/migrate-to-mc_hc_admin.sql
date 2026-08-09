@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS `servers` (
   `sv_created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
   `last_reset_at` datetime DEFAULT NULL,
   `reset_code` char(8) DEFAULT NULL,
+  `voice_enabled` boolean NOT NULL DEFAULT false,
   PRIMARY KEY (`sv_id`),
   UNIQUE KEY `unique_port` (`sv_port`),
   UNIQUE KEY `unique_reset_code` (`reset_code`),

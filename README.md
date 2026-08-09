@@ -3,7 +3,7 @@
 以前の [discord-mc-admin](https://github.com/yukugura/discord-mc-admin) の MySQL・Minecraft VM 構成を使い、Discord のコマンドツリーでハードコアサーバーを提供します。
 
 - `/create` — EULA 同意（はい/いいえ）後に近接 VC の有無を選択。`default` ユーザーは名前なしで 1 台まで作成。admin は `name` を必ず入力して複数台作成可能
-- 近接 VC ありは Paper を選び、DB の `server_versions` に登録された対応バージョンからプルダウン選択。なしは選択なしで最新 Vanilla を作成
+- 近接 VC ありは Paper を選び、DB の `server_versions` に登録された対応バージョンからプルダウン選択してSimple Voice Chatを導入。なしは選択なしでDB登録済みの最新Paperをプラグインなしで作成
 - `/admin key:<ADMIN_KEY>` — `admin` 権限に変更。admin は複数台作成可能
 - `/reset` — 自分のサーバーを「はい / いいえ」で確認してリセット。admin が複数台持つ場合は対象選択を表示
 - `/reset code:<8桁コード>` — 他ユーザーのサーバーをリセットする場合だけコードを入力
@@ -37,7 +37,7 @@ sudo bash setup-hardcore-vm.sh
 
 既存環境のスクリプトの場所が異なる場合だけ、`SCRIPTS_DIR=/minecraft/実際の場所 sudo bash setup-hardcore-vm.sh` のように指定します。ダウンロード URL は Discord から渡さず、DB の `server_versions` に登録済みの値だけを使用します。
 
-セットアップは既存 `dc-mc-admin` を変更せず、`/etc/ufw/applications.d/hc-mc-admin` に `25401:25410/tcp` の UFW プロファイルを追加して許可します。UFW 自体の有効化は行いません。Simple Voice Chat 用の UDP ポートは、プラグイン導入時に別途追加します。
+セットアップは既存 `dc-mc-admin` を変更せず、`/etc/ufw/applications.d/hc-mc-admin` に `25401:25410/tcp` と Simple Voice Chat 用の `24401:24410/udp` の UFW プロファイルを追加して許可します。UFW 自体の有効化は行いません。VCありで作成したPaperサーバーだけにSimple Voice Chatを導入し、UDPポートはMinecraftポートから1000を引いた値になります。VCなしではDB登録済みのPaper最新版を、プラグインなしで起動します。
 
 ## 起動
 
