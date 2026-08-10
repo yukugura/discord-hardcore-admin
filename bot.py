@@ -142,6 +142,12 @@ class Store:
                 CONSTRAINT fk_event_server FOREIGN KEY (sv_id) REFERENCES servers(sv_id) ON UPDATE CASCADE ON DELETE SET NULL,
                 CONSTRAINT fk_event_user FOREIGN KEY (dc_user_id) REFERENCES users(dc_user_id) ON UPDATE CASCADE ON DELETE SET NULL
             )""")
+            # A server without an assigned port cannot be managed or reached.
+            # Older incomplete records are retained as deleted history instead of
+            # blocking a user or breaking /status.
+            cur.execute("UPDATE servers SET status='deleted' WHERE sv_port IS NULL AND status<>'deleted'")
+            if cur.rowcount:
+                log.info("DB migration: marked %s unassigned server records as deleted", cur.rowcount)
             conn.commit()
         finally: conn.close()
     async def bootstrap(self): await asyncio.to_thread(self._bootstrap)
@@ -160,9 +166,9 @@ class Store:
         async with self.port_lock:
             perm = await self.permission(user_id)
             if perm == "default":
-                active = await self.query("SELECT sv_id FROM servers WHERE dc_user_id=%s AND status<>'deleted'", (str(user_id),), True)
+                active = await self.query("SELECT sv_id FROM servers WHERE dc_user_id=%s AND sv_port IS NOT NULL AND status<>'deleted'", (str(user_id),), True)
                 if active: return None
-            duplicate = await self.query("SELECT sv_id FROM servers WHERE dc_user_id=%s AND sv_name=%s AND status<>'deleted'", (str(user_id), name), True)
+            duplicate = await self.query("SELECT sv_id FROM servers WHERE dc_user_id=%s AND sv_name=%s AND sv_port IS NOT NULL AND status<>'deleted'", (str(user_id), name), True)
             if duplicate: raise ValueError("同じ名前のサーバーがすでに存在します")
             used = {r["sv_port"] for r in await self.query("SELECT sv_port FROM servers WHERE status<>'deleted'", fetch=True)}
             port = next((p for p in range(self.config.min_port, self.config.max_port + 1) if p not in used), None)
@@ -186,18 +192,18 @@ class Store:
         await self.query("UPDATE servers SET status=%s WHERE sv_id=%s", ("running" if ok else "error",server["id"]))
         await self.event("created" if ok else "create_failed", user_id, server["id"])
     async def get_server(self, user_id, name):
-        rows = await self.query("SELECT sv_id,sv_port FROM servers WHERE dc_user_id=%s AND sv_name=%s AND status<>'deleted'", (str(user_id),name), True)
+        rows = await self.query("SELECT sv_id,sv_port FROM servers WHERE dc_user_id=%s AND sv_name=%s AND sv_port IS NOT NULL AND status<>'deleted'", (str(user_id),name), True)
         return rows[0] if rows else None
     async def server_for_reset_code(self, reset_code):
-        rows = await self.query("SELECT sv_id,sv_port FROM servers WHERE reset_code=%s AND status IN ('running','stopped','error')", (reset_code.upper(),), True)
+        rows = await self.query("SELECT sv_id,sv_port FROM servers WHERE reset_code=%s AND sv_port IS NOT NULL AND status IN ('running','stopped','error')", (reset_code.upper(),), True)
         return rows[0] if rows else None
     async def servers_for_user(self, user_id):
-        return await self.query("SELECT sv_id,sv_name,sv_type,sv_ver,sv_port,status,last_reset_at,reset_code FROM servers WHERE dc_user_id=%s AND status<>'deleted' ORDER BY sv_id", (str(user_id),), True)
+        return await self.query("SELECT sv_id,sv_name,sv_type,sv_ver,sv_port,status,last_reset_at,reset_code FROM servers WHERE dc_user_id=%s AND sv_port IS NOT NULL AND status<>'deleted' ORDER BY sv_id", (str(user_id),), True)
     async def reset_result(self, server, user_id, ok):
         if ok: await self.query("UPDATE servers SET status='running',last_reset_at=UTC_TIMESTAMP() WHERE sv_id=%s", (server["sv_id"],))
         await self.event("reset" if ok else "reset_failed", user_id, server["sv_id"])
     async def expired(self):
-        return await self.query("SELECT sv_id,dc_user_id,sv_port FROM servers WHERE status IN ('running','stopped','error') AND last_reset_at < UTC_TIMESTAMP() - INTERVAL %s DAY", (self.config.retention_days,), True)
+        return await self.query("SELECT sv_id,dc_user_id,sv_port FROM servers WHERE sv_port IS NOT NULL AND status IN ('running','stopped','error') AND last_reset_at < UTC_TIMESTAMP() - INTERVAL %s DAY", (self.config.retention_days,), True)
     async def deleted(self, server, ok):
         if ok: await self.query("UPDATE servers SET status='deleted',sv_port=NULL WHERE sv_id=%s", (server["sv_id"],))
         await self.event("expired_deleted" if ok else "expired_delete_failed", None, server["sv_id"], f"owner={server['dc_user_id']}")
@@ -406,7 +412,8 @@ class ControlCog(commands.Cog):
                 deleted_at=server["last_reset_at"].replace(tzinfo=timezone.utc)+timedelta(days=self.bot.config.retention_days)
                 deadline=deleted_at.astimezone(jst).strftime("%Y-%m-%d %H:%M JST")
             else: deadline="未設定"
-            embed.add_field(name=f"{server['sv_name']} — {state}",value=f"接続先: `{self.bot.address_for(server['sv_port'])}`\nバージョン: `{server['sv_type']} {server['sv_ver']}`\nリセットコード: ||{server['reset_code'] or '未発行'}||\n自動削除予定: `{deadline}`",inline=False)
+            address = self.bot.address_for(server["sv_port"]) if server["sv_port"] is not None else "未割当"
+            embed.add_field(name=f"{server['sv_name']} — {state}",value=f"接続先: `{address}`\nバージョン: `{server['sv_type']} {server['sv_ver']}`\nリセットコード: ||{server['reset_code'] or '未発行'}||\n自動削除予定: `{deadline}`",inline=False)
         await interaction.followup.send(embed=embed,ephemeral=True)
     @app_commands.command(description="サーバーを削除し、作成枠を解放します")
     async def delete(self, interaction):
