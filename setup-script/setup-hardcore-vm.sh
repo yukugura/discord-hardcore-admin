@@ -55,7 +55,8 @@ server-port=25565
 gamemode=survival
 difficulty=hard
 hardcore=false
-online-mode=true
+online-mode=false
+enforce-secure-profile=false
 enable-rcon=false
 EOF
   printf 'eula=false\n' >"$CONFIG_DIR/eula.txt"
@@ -146,7 +147,9 @@ PY
 fi
 # discord-mc-admin と同じ config テンプレートを使い、HC 用の値だけ置換する。
 cp "$config_dir/server.properties" "$dir/server.properties"
-sed -i "s/^server-port=.*/server-port=$port/; s/^hardcore=.*/hardcore=true/" "$dir/server.properties"
+sed -i "s/^server-port=.*/server-port=$port/; s/^hardcore=.*/hardcore=true/; s/^online-mode=.*/online-mode=false/; s/^enforce-secure-profile=.*/enforce-secure-profile=false/" "$dir/server.properties"
+grep -q '^online-mode=' "$dir/server.properties" || echo 'online-mode=false' >>"$dir/server.properties"
+grep -q '^enforce-secure-profile=' "$dir/server.properties" || echo 'enforce-secure-profile=false' >>"$dir/server.properties"
 cp "$config_dir/eula.txt" "$dir/eula.txt"
 sed -i 's/^eula=.*/eula=true/' "$dir/eula.txt"
 [[ "$type" == paper ]] && cp "$config_dir/spigot.yml" "$dir/spigot.yml"

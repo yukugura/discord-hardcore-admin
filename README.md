@@ -41,6 +41,10 @@ sudo bash setup-hardcore-vm.sh
 
 ワールドリセット時の旧ワールドは `/minecraft/backups/hardcore/HC-<port>/<UTC時刻>/` に退避されます。各サーバーのバックアップは最新10件まで保持し、`RESET_RETENTION_DAYS`（既定30日）を過ぎたものは6時間ごとのクリーンアップで削除されます。サーバーを削除すると、そのサーバーのバックアップ一式も削除されます。
 
+## BungeeCord経由のチャット
+
+BOTが新規作成するHardcoreバックエンドは、`server.properties` に `online-mode=false` と `enforce-secure-profile=false` を設定します。BungeeCord側は手動で `online_mode: true`、`ip_forward: true`、`enforce_secure_profile: false` に設定してください。既存のHardcoreサーバーには自動反映されないため、同じ2行を追加・変更して再起動します。
+
 ## 起動
 
 ```bash
