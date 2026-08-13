@@ -174,7 +174,7 @@ class Store:
             port = next((p for p in range(self.config.min_port, self.config.max_port + 1) if p not in used), None)
             if port is None:
                 await self.event("create_rejected_capacity", user_id, detail="all 10 hardcore slots are occupied")
-                raise CapacityError("現在、ハードコアサーバーの作成枠（10 台）がすべて使用中です。空きが出るまで作成できません。")
+                raise CapacityError("現在、ハードコアサーバーの作成枠がすべて使用中です。空きが出るまで作成できません。")
             # コードはパスワードではなく、共有リセット用の識別子として平文保存する。
             alphabet = string.ascii_uppercase + string.digits
             for _ in range(10):
