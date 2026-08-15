@@ -185,7 +185,9 @@ class Store:
                 except mysql.connector.IntegrityError:
                     continue
             else: raise RuntimeError("リセットコードを発行できませんでした")
-            row = (await self.query("SELECT sv_id FROM servers WHERE dc_user_id=%s AND sv_name=%s", (str(user_id),name), True))[0]
+            # A deleted server can have the same owner/name. The just-reserved
+            # port identifies the new row unambiguously.
+            row = (await self.query("SELECT sv_id FROM servers WHERE dc_user_id=%s AND sv_name=%s AND sv_port=%s ORDER BY sv_id DESC LIMIT 1", (str(user_id),name,port), True))[0]
             await self.event("create_requested", user_id, row["sv_id"], f"{server_type} {version}; port={port}")
             return {"id":row["sv_id"],"port":port,"reset_code":reset_code}
     async def create_result(self, server, user_id, ok):
