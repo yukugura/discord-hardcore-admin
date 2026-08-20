@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]{3,32}$")
+MCID_RE = re.compile(r"^[A-Za-z0-9_]{3,16}$")
 DEFAULT_VERSION_ROWS = (
     ("paper", "1.21.8", 60, "https://fill-data.papermc.io/v1/objects/8de7c52c3b02403503d16fac58003f1efef7dd7a0256786843927fa92ee57f1e/paper-1.21.8-60.jar", True),
     ("paper", "1.21.10", 112, "https://fill-data.papermc.io/v1/objects/d901c205cebd2c14e2d92c5fcbd0ba95add71da9726fc7829d1431a8b80969b6/paper-1.21.10-112.jar", True),
@@ -167,9 +168,13 @@ class Store:
             perm = await self.permission(user_id)
             if perm == "default":
                 active = await self.query("SELECT sv_id FROM servers WHERE dc_user_id=%s AND sv_port IS NOT NULL AND status<>'deleted'", (str(user_id),), True)
-                if active: return None
+                if active:
+                    await self.event("create_rejected", user_id, active[0]["sv_id"], "already_has_server")
+                    return None
             duplicate = await self.query("SELECT sv_id FROM servers WHERE dc_user_id=%s AND sv_name=%s AND sv_port IS NOT NULL AND status<>'deleted'", (str(user_id), name), True)
-            if duplicate: raise ValueError("同じ名前のサーバーがすでに存在します")
+            if duplicate:
+                await self.event("create_rejected", user_id, duplicate[0]["sv_id"], "duplicate_name")
+                raise ValueError("同じ名前のサーバーがすでに存在します")
             used = {r["sv_port"] for r in await self.query("SELECT sv_port FROM servers WHERE status<>'deleted'", fetch=True)}
             port = next((p for p in range(self.config.min_port, self.config.max_port + 1) if p not in used), None)
             if port is None:
@@ -215,13 +220,16 @@ class Store:
 
 class Remote:
     def __init__(self, config): self.config = config
-    def run(self, action, port=None, server_type=None, version=None, url=None, voice_enabled=False):
+    def run(self, action, port=None, server_type=None, version=None, url=None, voice_enabled=False, mcid=None):
         if action == "prune-backups":
             args = [action, str(self.config.retention_days)]
         else:
-            if action not in {"create","reset","delete","status"} or port is None or not self.config.min_port <= port <= self.config.max_port: raise ValueError("不正な管理操作")
+            if action not in {"create","reset","delete","status","op"} or port is None or not self.config.min_port <= port <= self.config.max_port: raise ValueError("不正な管理操作")
             args = [action, str(port)]
             if action == "reset": args.append(str(self.config.retention_days))
+            if action == "op":
+                if not MCID_RE.fullmatch(mcid or ""): raise ValueError("不正なMinecraft ID")
+                args.append(mcid)
         if action == "create":
             if server_type not in {"vanilla","paper"} or not re.fullmatch(r"[0-9.]+", version or "") or not (url or "").startswith("https://"): raise ValueError("不正な作成情報")
             args += [server_type, version, url, "1" if voice_enabled else "0"]
@@ -337,6 +345,32 @@ class DeleteSelect(discord.ui.Select):
     def __init__(self, servers): super().__init__(placeholder="削除するサーバーを選択",options=[discord.SelectOption(label=s["sv_name"],value=str(s["sv_id"])) for s in servers.values()])
     async def callback(self, interaction): await self.view.chosen(interaction,self.view.servers[self.values[0]])
 
+class OpSelectView(OwnerView):
+    def __init__(self, bot, owner, servers):
+        super().__init__(bot,owner,""); self.servers={str(s["sv_id"]):s for s in servers}; self.add_item(OpSelect(self.servers))
+    async def chosen(self, interaction, server):
+        await interaction.response.send_modal(OpModal(self.bot, self.owner, server)); self.stop()
+
+class OpSelect(discord.ui.Select):
+    def __init__(self, servers): super().__init__(placeholder="OP権限を付与するサーバーを選択",options=[discord.SelectOption(label=s["sv_name"],value=str(s["sv_id"])) for s in servers.values()])
+    async def callback(self, interaction): await self.view.chosen(interaction,self.view.servers[self.values[0]])
+
+class OpModal(discord.ui.Modal, title="Minecraft IDを入力"):
+    mcid = discord.ui.TextInput(label="Minecraftユーザー名", placeholder="例: Steve", min_length=3, max_length=16)
+    def __init__(self, bot, owner, server):
+        super().__init__(timeout=120); self.bot,self.owner,self.server=bot,owner,server
+    async def on_submit(self, interaction):
+        name = self.mcid.value
+        if not MCID_RE.fullmatch(name):
+            await self.bot.store.event("op_rejected", interaction.user.id, self.server["sv_id"], "invalid_mcid")
+            await interaction.response.send_message("Minecraft IDは英数字と `_` の3〜16文字にしてください。", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try: ok = await asyncio.to_thread(self.bot.remote.run, "op", self.server["sv_port"], mcid=name)
+        except Exception: log.exception("op failed"); ok = False
+        await self.bot.store.event("op_granted" if ok else "op_failed", interaction.user.id, self.server["sv_id"], f"mcid={name}")
+        await interaction.followup.send(f"`{name}` にOP権限を付与しました。" if ok else "OP権限の付与に失敗しました。サーバーが起動中か確認してください。", ephemeral=True)
+
 class Bot(commands.Bot):
     def __init__(self, config): super().__init__(command_prefix="!",intents=discord.Intents.none()); self.config=config; self.store=Store(config); self.remote=Remote(config)
     async def setup_hook(self):
@@ -369,17 +403,23 @@ class ControlCog(commands.Cog):
     @app_commands.command(description="管理者権限を有効化します")
     async def admin(self, interaction, key: str):
         await self.user(interaction)
-        if key != self.bot.config.admin_key: await interaction.response.send_message("管理キーが正しくありません。",ephemeral=True); return
+        await self.bot.store.event("command_admin", interaction.user.id)
+        if key != self.bot.config.admin_key:
+            await self.bot.store.event("admin_rejected", interaction.user.id, detail="invalid_key")
+            await interaction.response.send_message("管理キーが正しくありません。",ephemeral=True); return
         await self.bot.store.query("UPDATE users SET perm_name='admin' WHERE dc_user_id=%s",(str(interaction.user.id),)); await self.bot.store.event("admin_granted",interaction.user.id)
         await interaction.response.send_message("admin 権限を有効化しました。",ephemeral=True)
     @app_commands.command(description="EULA 同意後にハードコアサーバーを作成します")
     @app_commands.describe(name="admin は作成するサーバー名を必ず入力")
     async def create(self, interaction, name: str | None = None):
         await self.user(interaction)
+        await self.bot.store.event("command_create", interaction.user.id)
         if await self.bot.store.permission(interaction.user.id) == "admin":
             if not name:
+                await self.bot.store.event("create_rejected", interaction.user.id, detail="admin_name_required")
                 await interaction.response.send_message("admin は `name` を入力してサーバー名を指定してください。",ephemeral=True); return
             if not NAME_RE.fullmatch(name):
+                await self.bot.store.event("create_rejected", interaction.user.id, detail="invalid_name")
                 await interaction.response.send_message("名前は英数字・`_`・`-` の 3〜32 文字にしてください。",ephemeral=True); return
         else:
             name=f"hc-{interaction.user.id}"
@@ -388,21 +428,28 @@ class ControlCog(commands.Cog):
     @app_commands.describe(code="他ユーザーのサーバーをリセットする場合に入力")
     async def reset(self, interaction, code: str | None = None):
         await self.user(interaction)
+        await self.bot.store.event("command_reset", interaction.user.id, detail="mode=code" if code else "mode=own")
         if code:
             server=await self.bot.store.server_for_reset_code(code)
-            if not server: await interaction.response.send_message("リセットコードが正しくないか、対象サーバーは利用できません。",ephemeral=True); return
+            if not server:
+                await self.bot.store.event("reset_rejected", interaction.user.id, detail="invalid_code")
+                await interaction.response.send_message("リセットコードが正しくないか、対象サーバーは利用できません。",ephemeral=True); return
             await interaction.response.send_message("このサーバーのワールドをリセットしますか？",view=ResetConfirmView(self.bot,interaction.user.id,server),ephemeral=True)
             return
         servers=await self.bot.store.servers_for_user(interaction.user.id)
-        if not servers: await interaction.response.send_message("リセットできる自分のサーバーはありません。",ephemeral=True); return
+        if not servers:
+            await self.bot.store.event("reset_rejected", interaction.user.id, detail="no_owned_server")
+            await interaction.response.send_message("リセットできる自分のサーバーはありません。",ephemeral=True); return
         if len(servers) == 1:
             await interaction.response.send_message("このサーバーのワールドをリセットしますか？",view=ResetConfirmView(self.bot,interaction.user.id,servers[0]),ephemeral=True); return
         await interaction.response.send_message("リセットする自分のサーバーを選択してください。",view=ResetSelectView(self.bot,interaction.user.id,servers),ephemeral=True)
     @app_commands.command(description="自分のサーバーの起動状態と削除予定を表示します")
     async def status(self, interaction):
         await self.user(interaction)
+        await self.bot.store.event("command_status", interaction.user.id)
         servers=await self.bot.store.servers_for_user(interaction.user.id)
         if not servers:
+            await self.bot.store.event("status_empty", interaction.user.id)
             await interaction.response.send_message("作成済みのサーバーはありません。",ephemeral=True); return
         await interaction.response.defer(ephemeral=True,thinking=True)
         checks=await asyncio.gather(*[asyncio.to_thread(self.bot.remote.run,"status",server["sv_port"]) for server in servers],return_exceptions=True)
@@ -416,15 +463,29 @@ class ControlCog(commands.Cog):
             else: deadline="未設定"
             address = self.bot.address_for(server["sv_port"]) if server["sv_port"] is not None else "未割当"
             embed.add_field(name=f"{server['sv_name']} — {state}",value=f"接続先: `{address}`\nバージョン: `{server['sv_type']} {server['sv_ver']}`\nリセットコード: ||{server['reset_code'] or '未発行'}||\n自動削除予定: `{deadline}`",inline=False)
+            await self.bot.store.event("status_checked", interaction.user.id, server["sv_id"], f"state={state}")
         await interaction.followup.send(embed=embed,ephemeral=True)
+        await self.bot.store.event("status_completed", interaction.user.id, detail=f"servers={len(servers)}")
     @app_commands.command(description="サーバーを削除し、作成枠を解放します")
     async def delete(self, interaction):
         await self.user(interaction)
+        await self.bot.store.event("command_delete", interaction.user.id)
         servers=await self.bot.store.servers_for_user(interaction.user.id)
-        if not servers: await interaction.response.send_message("削除できるサーバーはありません。",ephemeral=True); return
+        if not servers:
+            await self.bot.store.event("delete_rejected", interaction.user.id, detail="no_owned_server")
+            await interaction.response.send_message("削除できるサーバーはありません。",ephemeral=True); return
         if len(servers) == 1:
             await interaction.response.send_message("このサーバーを完全に削除しますか？",view=DeleteConfirmView(self.bot,interaction.user.id,servers[0]),ephemeral=True); return
         await interaction.response.send_message("削除するサーバーを選択してください。",view=DeleteSelectView(self.bot,interaction.user.id,servers),ephemeral=True)
+    @app_commands.command(description="MinecraftユーザーにOP権限を付与します")
+    async def op(self, interaction):
+        await self.user(interaction)
+        await self.bot.store.event("command_op", interaction.user.id)
+        servers=await self.bot.store.servers_for_user(interaction.user.id)
+        if not servers:
+            await self.bot.store.event("op_rejected", interaction.user.id, detail="no_owned_server")
+            await interaction.response.send_message("OP権限を付与できる自分のサーバーはありません。",ephemeral=True); return
+        await interaction.response.send_message("OP権限を付与するサーバーを選択してください。", view=OpSelectView(self.bot, interaction.user.id, servers), ephemeral=True)
 
 if __name__ == "__main__":
     load_dotenv(); config=Config.load(); Bot(config).run(config.token,log_handler=None)

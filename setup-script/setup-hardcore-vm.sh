@@ -223,7 +223,7 @@ if [[ "$action" == prune-backups ]]; then
   for backup_dir in "$BACKUP_ROOT"/HC-*; do prune_server_backups "$backup_dir" "$retention_days"; done
   exit 0
 fi
-[[ "$action" =~ ^(create|reset|delete|status)$ && "$port" =~ ^[0-9]+$ && "$port" -ge "$SV_MIN_PORT" && "$port" -le "$SV_MAX_PORT" ]] || exit 2
+[[ "$action" =~ ^(create|reset|delete|status|op)$ && "$port" =~ ^[0-9]+$ && "$port" -ge "$SV_MIN_PORT" && "$port" -le "$SV_MAX_PORT" ]] || exit 2
 dir="$MC_ROOT/servers/HC-$port"; service="HC-$port.service"
 case "$action" in
   create) "$HARDCORE_SCRIPTS_DIR/create.sh" "$port" "${3:-}" "${4:-}" "${5:-}" "${6:-0}" ;;
@@ -239,6 +239,12 @@ case "$action" in
     ;;
   delete) "$HARDCORE_SCRIPTS_DIR/delete.sh" "$port" ;;
   status) systemctl is-active --quiet "$service" ;;
+  op)
+    mcid="${3:-}"
+    [[ "$mcid" =~ ^[A-Za-z0-9_]{3,16}$ ]] || exit 2
+    systemctl is-active --quiet "$service"
+    screen -p 0 -S "HC-$port" -X eval "stuff \"op ${mcid}\\015\""
+    ;;
 esac
 ADMIN
 
